@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  background: transparent;
+}
+body {
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+/* barras de rolagem discretas dentro da ilha */
+* { scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.18) transparent; }
