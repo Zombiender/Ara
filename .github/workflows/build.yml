@@ -1,55 +1,175 @@
+
 name: Gerar instalador Windows
 
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches:
+      - main
+
+permissions:
+  contents: read
 
 jobs:
   build:
+    name: Compilar Aura para Windows
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v4
+      # 1. Baixar o repositório
+      - name: Baixar código
+        uses: actions/checkout@v4
 
-      - name: Organizar estrutura (caso o upload tenha achatado as pastas)
-        shell: pwsh
-        run: |
-          function Mover($nome, $destino) {
-            if ((Test-Path $nome) -and -not (Test-Path (Join-Path $destino $nome))) {
-              New-Item -ItemType Directory -Force -Path $destino | Out-Null
-              Move-Item $nome (Join-Path $destino $nome)
-            }
-          }
-          'Cargo.toml','build.rs','tauri.conf.json' | ForEach-Object { Mover $_ 'src-tauri' }
-          Mover 'default.json' 'src-tauri/capabilities'
-          'lib.rs','main.rs' | ForEach-Object { Mover $_ 'src-tauri/src' }
-          'config.ts','estado.ts','voz.ts','saude.ts','acoes.ts','spotify.ts','ia.ts','reconhecimento.ts','orquestrador.ts','overlay.ts','midia.ts','atalho.ts' | ForEach-Object { Mover $_ 'src/core' }
-          Mover 'main.ts' 'src'
-          Mover 'welcome.ts' 'src'
-          Get-ChildItem -Recurse -File -Exclude node_modules | Where-Object { $_.FullName -notmatch 'node_modules|\.git\\' } | ForEach-Object { $_.FullName }
-
-      - uses: actions/setup-node@v4
+      # 2. Instalar Node.js
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-      - run: npm install
-      - run: npx tauri icon app-icon.png
-      - name: Compilar (.env a partir dos Secrets)
+
+      # 3. Instalar Rust
+      - name: Configurar Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      # 4. Organizar os arquivos do projeto
+      - name: Organizar estrutura do Aura
         shell: pwsh
         run: |
-          @"
-          VITE_NOME_ASSISTENTE=${{ secrets.VITE_NOME_ASSISTENTE }}
-          VITE_GEMINI_API_KEY=${{ secrets.VITE_GEMINI_API_KEY }}
-          VITE_GEMINI_MODEL=${{ secrets.VITE_GEMINI_MODEL }}
-          VITE_SPOTIFY_CLIENT_ID=${{ secrets.VITE_SPOTIFY_CLIENT_ID }}
-          VITE_SPOTIFY_REFRESH_TOKEN=${{ secrets.VITE_SPOTIFY_REFRESH_TOKEN }}
-          VITE_CHAVE_PIX=${{ secrets.VITE_CHAVE_PIX }}
-          "@ | Set-Content .env
-          npm run tauri build
-      - uses: actions/upload-artifact@v4
+          $ErrorActionPreference = "Stop"
+
+          function Move-RootFile {
+            param (
+              [string]$File,
+              [string]$Destination
+            )
+
+            if (Test-Path $File -PathType Leaf) {
+              New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+
+              $Target = Join-Path $Destination (Split-Path $File -Leaf)
+
+              if (-not (Test-Path $Target)) {
+                Move-Item -Path $File -Destination $Target
+                Write-Host "Movido: $File -> $Target"
+              }
+            }
+          }
+
+          # Estrutura do Tauri
+          New-Item -ItemType Directory -Force -Path "src-tauri/src" | Out-Null
+          New-Item -ItemType Directory -Force -Path "src-tauri/capabilities" | Out-Null
+
+          Move-RootFile "Cargo.toml" "src-tauri"
+          Move-RootFile "build.rs" "src-tauri"
+          Move-RootFile "tauri.conf.json" "src-tauri"
+          Move-RootFile "default.json" "src-tauri/capabilities"
+          Move-RootFile "lib.rs" "src-tauri/src"
+          Move-RootFile "main.rs" "src-tauri/src"
+
+          # Estrutura do frontend
+          New-Item -ItemType Directory -Force -Path "src/core" | Out-Null
+          New-Item -ItemType Directory -Force -Path "src/ui" | Out-Null
+
+          # Arquivos principais
+          Move-RootFile "main.ts" "src"
+          Move-RootFile "welcome.ts" "src"
+
+          # Arquivos React
+          Get-ChildItem -File -Filter "*.tsx" | ForEach-Object {
+            Move-RootFile $_.Name "src/ui"
+          }
+
+          # CSS da interface
+          Move-RootFile "index.css" "src/ui"
+
+          # Arquivos TypeScript do núcleo
+          Get-ChildItem -File -Filter "*.ts" |
+            Where-Object {
+              $_.Name -ne "vite.config.ts"
+            } |
+            ForEach-Object {
+              Move-RootFile $_.Name "src/core"
+            }
+
+          # Verificar estrutura
+          Write-Host "Estrutura final:"
+          Get-ChildItem -Recurse -File |
+            Where-Object {
+              $_.FullName -notmatch "node_modules|\.git\\"
+            } |
+            ForEach-Object {
+              Write-Host $_.FullName
+            }
+
+          # Criar configuração TypeScript
+          @'
+          {
+            "compilerOptions": {
+              "target": "ES2022",
+              "useDefineForClassFields": true,
+              "lib": ["ES2022", "DOM", "DOM.Iterable"],
+              "module": "ESNext",
+              "skipLibCheck": true,
+              "moduleResolution": "Bundler",
+              "allowImportingTsExtensions": true,
+              "resolveJsonModule": true,
+              "isolatedModules": true,
+              "noEmit": true,
+              "jsx": "react-jsx",
+              "strict": false,
+              "noUnusedLocals": false,
+              "noUnusedParameters": false,
+              "types": ["vite/client"]
+            },
+            "include": [
+              "src",
+              "vite.config.ts"
+            ]
+          }
+          '@ | Set-Content -Path "tsconfig.json" -Encoding utf8
+
+      # 5. Instalar dependências
+      - name: Instalar dependências
+        run: npm install --no-audit --no-fund
+
+      # 6. Gerar ícones do aplicativo
+      - name: Gerar ícones
+        run: npx tauri icon app-icon.png
+
+      # 7. Preparar variáveis de ambiente
+      - name: Configurar variáveis
+        shell: pwsh
+        env:
+          VITE_NOME_ASSISTENTE: ${{ secrets.VITE_NOME_ASSISTENTE }}
+          VITE_GEMINI_API_KEY: ${{ secrets.VITE_GEMINI_API_KEY }}
+          VITE_GEMINI_MODEL: ${{ secrets.VITE_GEMINI_MODEL }}
+          VITE_SPOTIFY_CLIENT_ID: ${{ secrets.VITE_SPOTIFY_CLIENT_ID }}
+          VITE_SPOTIFY_REFRESH_TOKEN: ${{ secrets.VITE_SPOTIFY_REFRESH_TOKEN }}
+          VITE_CHAVE_PIX: ${{ secrets.VITE_CHAVE_PIX }}
+        run: |
+          $lines = @(
+            "VITE_NOME_ASSISTENTE=$env:VITE_NOME_ASSISTENTE"
+            "VITE_GEMINI_API_KEY=$env:VITE_GEMINI_API_KEY"
+            "VITE_GEMINI_MODEL=$env:VITE_GEMINI_MODEL"
+            "VITE_SPOTIFY_CLIENT_ID=$env:VITE_SPOTIFY_CLIENT_ID"
+            "VITE_SPOTIFY_REFRESH_TOKEN=$env:VITE_SPOTIFY_REFRESH_TOKEN"
+            "VITE_CHAVE_PIX=$env:VITE_CHAVE_PIX"
+          )
+
+          [System.IO.File]::WriteAllLines(
+            ".env",
+            $lines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
+
+      # 8. Compilar aplicação e instalador
+      - name: Compilar Aura
+        run: npm run tauri -- build
+
+      # 9. Disponibilizar instalador
+      - name: Publicar instalador
+        uses: actions/upload-artifact@v4
         with:
-          name: Aura-instalador
+          name: Aura-instalador-Windows
           path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
+          retention-days: 14
