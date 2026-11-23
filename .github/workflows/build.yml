@@ -16,28 +16,33 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      # 1. Baixar o repositório
+      # Baixar projeto
       - name: Baixar código
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      # 2. Instalar Node.js
+      # Node.js
       - name: Configurar Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 22
 
-      # 3. Instalar Rust
+      # Rust
       - name: Configurar Rust
         uses: dtolnay/rust-toolchain@stable
 
-      # 4. Organizar os arquivos do projeto
+      - name: Configurar cache Rust
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # Organizar arquivos
       - name: Organizar estrutura do Aura
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          function Move-RootFile {
-            param (
+          function Move-File {
+            param(
               [string]$File,
               [string]$Destination
             )
@@ -48,65 +53,72 @@ jobs:
               $Target = Join-Path $Destination (Split-Path $File -Leaf)
 
               if (-not (Test-Path $Target)) {
-                Move-Item -Path $File -Destination $Target
+                Move-Item $File $Target
                 Write-Host "Movido: $File -> $Target"
               }
             }
           }
 
-          # Estrutura do Tauri
+          # Tauri
           New-Item -ItemType Directory -Force -Path "src-tauri/src" | Out-Null
           New-Item -ItemType Directory -Force -Path "src-tauri/capabilities" | Out-Null
 
-          Move-RootFile "Cargo.toml" "src-tauri"
-          Move-RootFile "build.rs" "src-tauri"
-          Move-RootFile "tauri.conf.json" "src-tauri"
-          Move-RootFile "default.json" "src-tauri/capabilities"
-          Move-RootFile "lib.rs" "src-tauri/src"
-          Move-RootFile "main.rs" "src-tauri/src"
+          Move-File "Cargo.toml" "src-tauri"
+          Move-File "build.rs" "src-tauri"
+          Move-File "tauri.conf.json" "src-tauri"
+          Move-File "default.json" "src-tauri/capabilities"
+          Move-File "lib.rs" "src-tauri/src"
+          Move-File "main.rs" "src-tauri/src"
 
-          # Estrutura do frontend
+          # Frontend
           New-Item -ItemType Directory -Force -Path "src/core" | Out-Null
           New-Item -ItemType Directory -Force -Path "src/ui" | Out-Null
 
-          # Arquivos principais
-          Move-RootFile "main.ts" "src"
-          Move-RootFile "welcome.ts" "src"
+          Move-File "main.ts" "src"
+          Move-File "welcome.ts" "src"
 
-          # Arquivos React
-          Get-ChildItem -File -Filter "*.tsx" | ForEach-Object {
-            Move-RootFile $_.Name "src/ui"
-          }
+          # Componentes React
+          Get-ChildItem -File -Filter "*.tsx" |
+            ForEach-Object {
+              Move-File $_.Name "src/ui"
+            }
 
-          # CSS da interface
-          Move-RootFile "index.css" "src/ui"
+          Move-File "index.css" "src/ui"
 
-          # Arquivos TypeScript do núcleo
+          # Arquivos de lógica
           Get-ChildItem -File -Filter "*.ts" |
             Where-Object {
-              $_.Name -ne "vite.config.ts"
+              $_.Name -notin @("vite.config.ts")
             } |
             ForEach-Object {
-              Move-RootFile $_.Name "src/core"
+              Move-File $_.Name "src/core"
             }
 
-          # Verificar estrutura
-          Write-Host "Estrutura final:"
-          Get-ChildItem -Recurse -File |
-            Where-Object {
-              $_.FullName -notmatch "node_modules|\.git\\"
-            } |
-            ForEach-Object {
-              Write-Host $_.FullName
-            }
+          # Verificação
+          Write-Host "Verificando arquivos..."
+          if (-not (Test-Path "vite.config.ts")) {
+            throw "vite.config.ts não encontrado"
+          }
 
-          # Criar configuração TypeScript
+          if (-not (Test-Path "src/main.ts")) {
+            throw "src/main.ts não encontrado"
+          }
+
+          if (-not (Test-Path "src/ui/montar.tsx")) {
+            throw "src/ui/montar.tsx não encontrado"
+          }
+
+          # Configuração TypeScript
           @'
           {
             "compilerOptions": {
               "target": "ES2022",
               "useDefineForClassFields": true,
-              "lib": ["ES2022", "DOM", "DOM.Iterable"],
+              "lib": [
+                "ES2022",
+                "DOM",
+                "DOM.Iterable"
+              ],
               "module": "ESNext",
               "skipLibCheck": true,
               "moduleResolution": "Bundler",
@@ -118,24 +130,35 @@ jobs:
               "strict": false,
               "noUnusedLocals": false,
               "noUnusedParameters": false,
-              "types": ["vite/client"]
+              "types": [
+                "node",
+                "vite/client"
+              ]
             },
             "include": [
               "src",
               "vite.config.ts"
             ]
           }
-          '@ | Set-Content -Path "tsconfig.json" -Encoding utf8
+          '@ | Set-Content "tsconfig.json" -Encoding utf8
 
-      # 5. Instalar dependências
+      # Dependências
       - name: Instalar dependências
         run: npm install --no-audit --no-fund
 
-      # 6. Gerar ícones do aplicativo
-      - name: Gerar ícones
+      # CORREÇÃO DO ERRO node:url
+      - name: Instalar tipos do Node.js
+        run: npm install --no-save @types/node --no-audit --no-fund
+
+      # Verificar TypeScript
+      - name: Verificar configuração TypeScript
+        run: npx tsc --noEmit
+
+      # Ícones
+      - name: Gerar ícones do Aura
         run: npx tauri icon app-icon.png
 
-      # 7. Preparar variáveis de ambiente
+      # Variáveis de ambiente
       - name: Configurar variáveis
         shell: pwsh
         env:
@@ -161,11 +184,11 @@ jobs:
             [System.Text.UTF8Encoding]::new($false)
           )
 
-      # 8. Compilar aplicação e instalador
+      # Compilação
       - name: Compilar Aura
         run: npm run tauri -- build
 
-      # 9. Disponibilizar instalador
+      # Disponibilizar instalador
       - name: Publicar instalador
         uses: actions/upload-artifact@v4
         with:
